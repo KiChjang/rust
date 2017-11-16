@@ -449,51 +449,56 @@ impl<'c, 'b, 'a: 'b+'c, 'gcx, 'tcx: 'a> MirBorrowckCtxt<'c, 'b, 'a, 'gcx, 'tcx> 
         // Check permissions
         self.check_access_permissions(lvalue_span, rw);
 
-        self.each_borrow_involving_path(
-            context, (sd, lvalue_span.0), flow_state, |this, _index, borrow, common_prefix| {
-                match (rw, borrow.kind) {
-                    (Read(_), BorrowKind::Shared) => {
-                        Control::Continue
-                    }
-                    (Read(kind), BorrowKind::Unique) |
-                    (Read(kind), BorrowKind::Mut) => {
-                        match kind {
-                            ReadKind::Copy =>
-                                this.report_use_while_mutably_borrowed(
-                                    context, lvalue_span, borrow),
-                            ReadKind::Borrow(bk) => {
-                                let end_issued_loan_span =
-                                    flow_state.borrows.base_results.operator().opt_region_end_span(
-                                        &borrow.region);
-                                this.report_conflicting_borrow(
-                                    context, common_prefix, lvalue_span, bk,
-                                    &borrow, end_issued_loan_span)
-                            }
+        // Ignore all borrows rooted in statics
+        if let Lvalue::Local(_) = *self.prefixes(lvalue_span.0, PrefixSet::All).last().unwrap() {
+            self.each_borrow_involving_path(
+                context, (sd, lvalue_span.0), flow_state, |this, _index, borrow, common_prefix| {
+                    match (rw, borrow.kind) {
+                        (Read(_), BorrowKind::Shared) => {
+                            Control::Continue
                         }
-                        Control::Break
-                    }
-                    (Write(kind), _) => {
-                        match kind {
-                            WriteKind::MutableBorrow(bk) => {
-                                let end_issued_loan_span =
-                                    flow_state.borrows.base_results.operator().opt_region_end_span(
-                                        &borrow.region);
-                                this.report_conflicting_borrow(
-                                    context, common_prefix, lvalue_span, bk,
-                                    &borrow, end_issued_loan_span)
+                        (Read(kind), BorrowKind::Unique) |
+                        (Read(kind), BorrowKind::Mut) => {
+                            match kind {
+                                ReadKind::Copy =>
+                                    this.report_use_while_mutably_borrowed(
+                                        context, lvalue_span, borrow),
+                                ReadKind::Borrow(bk) => {
+                                    let end_issued_loan_span =
+                                        flow_state.borrows.base_results
+                                            .operator()
+                                            .opt_region_end_span(&borrow.region);
+                                    this.report_conflicting_borrow(
+                                        context, common_prefix, lvalue_span, bk,
+                                        &borrow, end_issued_loan_span)
+                                }
                             }
-                            WriteKind::StorageDead |
-                            WriteKind::Mutate =>
-                                this.report_illegal_mutation_of_borrowed(
-                                    context, lvalue_span, borrow),
-                            WriteKind::Move =>
-                                this.report_move_out_while_borrowed(
-                                    context, lvalue_span, &borrow),
+                            Control::Break
                         }
-                        Control::Break
+                        (Write(kind), _) => {
+                            match kind {
+                                WriteKind::MutableBorrow(bk) => {
+                                    let end_issued_loan_span =
+                                        flow_state.borrows.base_results
+                                            .operator()
+                                            .opt_region_end_span(&borrow.region);
+                                    this.report_conflicting_borrow(
+                                        context, common_prefix, lvalue_span, bk,
+                                        &borrow, end_issued_loan_span)
+                                }
+                                WriteKind::StorageDead |
+                                WriteKind::Mutate =>
+                                    this.report_illegal_mutation_of_borrowed(
+                                        context, lvalue_span, borrow),
+                                WriteKind::Move =>
+                                    this.report_move_out_while_borrowed(
+                                        context, lvalue_span, &borrow),
+                            }
+                            Control::Break
+                        }
                     }
-                }
-            });
+                });
+        }
     }
 
     fn mutate_lvalue(&mut self,
@@ -640,7 +645,8 @@ impl<'c, 'b, 'a: 'b+'c, 'gcx, 'tcx: 'a> MirBorrowckCtxt<'c, 'b, 'a, 'gcx, 'tcx> 
                         Mutability::Mut => return,
                     }
                 }
-                Lvalue::Static(_) => {
+                Lvalue::Static(ref static_) => {
+                    if self.tcx.is_static_mut(static_.def_id) { break; }
                     // mutation of non-mut static is always illegal,
                     // independent of dataflow.
                     self.report_assignment_to_static(context, (lvalue, span));
